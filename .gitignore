@@ -1,0 +1,17 @@
+.rebar
+.eunit
+*.patch
+*.diff
+fprof*
+callgrind.*
+erl_crash.dump
+*.so
+*.trace
+*.log
+*.beam
+.DS_S*
+*~
+rel/node*
+deps
+ebin
+logs
