@@ -1,12 +1,13 @@
 {application, kafkamocker,
  [
-  {description, ""},
-  {vsn, "1"},
+  {description, "erlang/otp app that simulates a kafka broker"},
+  {vsn, "0.1"},
   {registered, []},
   {applications, [
                   kernel,
                   stdlib
                  ]},
+  {modules, [kafkamocker, kafkamocker_app, kafkamocker_tcp_handler, kafkamocker_fsm, kafkamocker_sup]},
   {mod, { kafkamocker_app, []}},
   {env, []}
  ]}.

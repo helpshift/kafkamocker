@@ -1,50 +1,21 @@
 -module(kafkamocker).
 
-% -export([start/0,
-%          encode/1, decode_produce/1, decode_to_message_sets/1,
-%          produce_request_to_messages/1,
-%          metadata/0, metadata_reply/0,
-%         produce/0, produce_reply/0]).
 -compile([export_all]).
 -include("kafkamocker.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 start()->
     application:start(ranch),
     application:start(kafkamocker),
     kafkamocker_fsm:start_link(),
-    % decode_produce(<<0,0,0,1,0,4,101,107,97,102,0,0,0,0,0,100,0,0,0,1,0,6,101,118,101,110,
-    %       116,115,0,0,0,1,0,0,0,0,0,0,0,32,0,0,0,0,0,0,0,0,0,0,0,20,151,133,
-    %       143,213,0,0,255,255,255,255,0,0,0,6,97,115,121,110,99,49>>),
-    {ok,S1} = gen_tcp:connect("localhost",9091, [binary,{packet,4}]),
-    gen_tcp:send(S1,<<%0,0,0,76,
-                     0,0,
-                    0,0,0,0,
-                    0,2,0,4,
-                    101,107,
-                    97,102,
-                    0,0,0,0,
-                    0,100,0,
-                    0,0,1,0,
-                    6,101,
-                    118,101,
-                    110,116,
-                    115,0,0,
-                    0,1,0,0,
-                    0,0,0,0,
-                    0,32,0,
-                    0,0,0,0,
-                    0,0,0,0,
-                    0,0,20,
-                    14,140,
-                    222,111,
-                    0,0,255,
-                    255,255,
-                    255,0,0,
-                    0,6,97,
-                    115,121,
-                    110,99,
-                    50>>),
     ok.
+
+debug(_A,_B)->
+    %format(A,B),
+    ok.
+
+format(A,B)->
+    io:format(A,B).
 
 metadata() ->
     {BrokerHost, BrokerPort} =
@@ -210,8 +181,6 @@ port_to_binary(N)->
     <<_X:16,R/binary>> = term_to_binary(N) , R.
 
 %% decode produce
-decode_produce(Packet)->
-    case Packet of
 % <<0,0,0,76,
 % 0,0, % <<0, 0,
 % 0,0, % _ApiVersion:16, Rest/binary>> ->
@@ -222,12 +191,17 @@ decode_produce(Packet)->
 % 0,0,0,100, %timeout
 % 0,0,0,1, % 1 topic
 % 0,6
+decode_produce(Packet)->
+    case Packet of
         <<CorrelationId:32, ClientIdLen:16, ClientId:ClientIdLen/binary, RequireAcks:16, Timeout:32, Rest/binary >> ->
-            io:format("~n asked to decode topics ~p",[Rest]),
-            {Topics, _ } = decode_to_topics(Rest),
-            #produce_request{ cor_id = CorrelationId, client_id = ClientId, required_acks = RequireAcks, timeout = Timeout, topics = Topics};
+            debug("~n asked to decode topics ~p",[Rest]),
+            {Topics, Remaining } = decode_to_topics(Rest),
+            { #produce_request{ cor_id = CorrelationId, client_id = ClientId, required_acks = RequireAcks, timeout = Timeout, topics = Topics}, Remaining};
         _ ->
-            #produce_request{   }
+            {
+          #produce_request{},
+          Packet
+         }
     end.
 
 decode_to_topics(Packet)->
@@ -244,7 +218,6 @@ decode_to_topics(Counter, Packet, Previous) ->
     decode_to_topics(Counter-1, Rest, [Next|Previous]).
 
 decode_to_topic(<<NameLen:16, Name:NameLen/binary,PartitionsBinary/binary>>)->
-    io:format("~n topic name:~p name: ~p partitions: ~p",[NameLen, Name, PartitionsBinary]),
     {Partitions,Rest} = decode_to_partitions(PartitionsBinary,[]),
     {#topic{ name = Name, partitions = Partitions},
      Rest};
@@ -253,26 +226,25 @@ decode_to_topic(Rest)->
 
 decode_to_partitions(<<>>, Previous) ->
     {Previous, <<>>};
-decode_to_partitions(<<Len:32, Id:32, ByteSize:32, MessageSetsEncoded:ByteSize/binary, Rest/binary>>, Previous) ->
-    io:format("~n ~p looks like ~w messagesets, rest is ~p",[MessageSetsEncoded,ByteSize,Rest]),
-    {MessageSets,Rest} = decode_message_set(MessageSetsEncoded, []),
-    [ io:format("~n found ~p messages inside ~p ",[length(Messages),MS]) ||
-        #message_set{ messages = Messages} = MS <- MessageSets ],
-    decode_to_partitions(Rest, [#partition{ id = Id, message_sets_size = length(MessageSets), message_sets = MessageSets } | Previous ]).
+decode_to_partitions(<<_Len:32, Id:32, ByteSize:32, MessageSetsEncoded:ByteSize/binary, Remaining/binary>>, Previous) ->
+    {MessageSets,_Rest} = decode_message_set(MessageSetsEncoded, []),
+    decode_to_partitions(Remaining, [#partition{ id = Id, message_sets_size = length(MessageSets), message_sets = MessageSets } | Previous ]);
+decode_to_partitions(Rest, Previous) ->
+    debug("~n dont know what to do with rest:~p previous:~p",[Rest, Previous]),
+    {Previous,Rest}.
+
 
 
 % decode_to_message_sets(MessageSets)->
 %     decode_to_message_sets(MessageSets,[]).
 decode_message_set(<<>>, Previous)->
-    io:format("~n nothin remaining so send ~p",[Previous]),
-    {[#message_set{ messages = Previous, size = length(Previous)  }],<<>>};
+    {[#message_set{ messages = lists:reverse(Previous), size = length(Previous)  }],<<>>};
 decode_message_set(<<_Offset:64, Size:32, Messages:Size/binary,Rest/binary>>, Previous) ->
-    io:format("~n look at message ~p it has ",[Messages]),
     {Next,_} = decode_to_message(Messages),
-    io:format("~n ~p rest is ~p, prev is ~p",[Next,Rest,Previous]),
+    %debug("~n ~p rest is ~p, prev is ~p",[Next,Rest,Previous]),
     decode_message_set(Rest, [Next| Previous ]);
 decode_message_set(Rest,Previous)->
-    io:format("~n cant figure out ~p",[Rest]),
+    debug("~n cant figure out ~p",[Rest]),
     {Previous,Rest}.
 
 decode_to_messages(MessagesEncoded)->
@@ -309,13 +281,13 @@ produce_partitions_to_messages([#partition{ message_sets = MessageSets} | Partit
 produce_messagesets_to_messages([],Acc)->
     Acc;
 produce_messagesets_to_messages([#message_set{ messages = Messages} | MessageSets], Acc)->
-    Next = produce_messages_to_messages(Messages, Acc),
+    Next = produce_messages_to_values(Messages, Acc),
     produce_messagesets_to_messages(MessageSets, Next).
-produce_messages_to_messages([], Acc)->
+produce_messages_to_values([], Acc)->
     Acc;
-produce_messages_to_messages([#message{ value = Value} | Messages], Acc)->
+produce_messages_to_values([#message{ value = Value} | Messages], Acc)->
     Next = [Value|Acc],
-    produce_messages_to_messages(Messages, Next).
+    produce_messages_to_values(Messages, Next).
 
 to_binary(Bin) when is_binary(Bin)->
     Bin;
