@@ -1,23 +1,23 @@
--record(kafkamocker_fsm, {broker, topics, callback, metadata}).
--record(metadata, {brokers, topics}).
--record(broker, { id, host, port }).
--record(topic, { name, error_code, partitions }).
--record(partition, { error_code, id, leader, replicas, isrs, message_sets, message_sets_size}).
--record(replica, { id }).
--record(isr, { id }).
+-record(kafkamocker_fsm, {brokers=[]::list(), topics=[]::list(), callback, metadata, conns=[]::list()}).
+-record(kafkamocker_metadata, {brokers, topics}).
+-record(kafkamocker_broker, { id, host, port }).
+-record(kafkamocker_topic, { name, error_code, partitions }).
+-record(kafkamocker_partition, { error_code, id, leader, replicas, isrs, message_sets, message_sets_size}).
+-record(kafkamocker_replica, { id }).
+-record(kafkamocker_isr, { id }).
 
--type kafka_byte() :: <<_:8>>.
+-type kafkamocker_kafka_byte() :: <<_:8>>.
 
--record(message_set, {offset=0::integer(), size=0::integer(), messages=[]::list()}).
--record(message, {crc=0::integer(), magicbyte=0::kafka_byte(), attributes=0::kafka_byte(), key = undefined::binary(), value::binary()}).
+-record(kafkamocker_message_set, {offset=0::integer(), size=0::integer(), messages=[]::list()}).
+-record(kafkamocker_message, {crc=0::integer(), magicbyte=0::kafkamocker_kafka_byte(), attributes=0::kafkamocker_kafka_byte(), key = undefined::binary(), value::binary()}).
 
 
 
--record(produce_request, { cor_id, client_id, error_code, required_acks, timeout, topics}).
+-record(kafkamocker_produce_request, { cor_id, client_id, error_code, required_acks, timeout, topics}).
 
--define(METADATA_REQUEST, <<0,3>>).
--define(SAMPLE_METADATA,
-        #metadata{
+-define(KAFKAMOCKER_METADATA_REQUEST, <<0,3>>).
+-define(KAFKAMOCKER_SAMPLE_METADATA,
+        #kafkamocker_metadata{
           brokers = [#broker{ id = 1, host = <<"localhost">>, port = 9091}],
           topics = [#topic{ name = <<"events">>, error_code = 0,
                             partitions = [#partition { error_code = 0, id = 0, leader = 1,

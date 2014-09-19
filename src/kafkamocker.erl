@@ -7,8 +7,22 @@
 start()->
     application:start(ranch),
     application:start(kafkamocker),
-    kafkamocker_fsm:start_link(),
-    ok.
+    kafkamocker_fsm:start_link().
+
+simple()->
+    application:set_env(kafkamocker, kafkamocker_bootstrap_topics, [<<"ekaf">>]),
+    application:set_env(kafkamocker, kafkamocker_bootstrap_broker, {"localhost",9907}),
+    application:ensure_started(kafkamocker),
+    start().
+
+simulate_brokers_down()->
+    send_event(simulate_brokers_down).
+
+send_event(Event)->
+    gen_fsm:send_event(kafkamocker_fsm, Event).
+
+log(_A,_B)->
+    error_logger:info_msg(_A,_B).
 
 debug(_A,_B)->
     %format(A,B),
@@ -28,11 +42,11 @@ metadata() ->
                  {ok, CustomTopics} -> CustomTopics
              end,
 
-    #metadata{ brokers = [ #broker{ id = 1, host = BrokerHost, port = BrokerPort }],
-               topics =  [ #topic { name = Topic,
-                                    partitions = [ #partition { id = 0, leader = 1,
-                                                                replicas = [#replica{ id = 1 }],
-                                                                isrs = [#isr{ id = 1 }]
+    #kafkamocker_metadata{ brokers = [ #kafkamocker_broker{ id = 1, host = BrokerHost, port = BrokerPort }],
+               topics =  [ #kafkamocker_topic { name = Topic,
+                                    partitions = [ #kafkamocker_partition { id = 0, leader = 1,
+                                                                replicas = [#kafkamocker_replica{ id = 1 }],
+                                                                isrs = [#kafkamocker_isr{ id = 1 }]
                                                                }
                                                   ]
                                    }
@@ -40,16 +54,16 @@ metadata() ->
               }.
 
 produce()->
-    #produce_request{
+    #kafkamocker_produce_request{
          cor_id = 1, timeout = 100,
          topics = [
-                   #topic{ name = <<"events">>,
+                   #kafkamocker_topic{ name = <<"events">>,
                            partitions =
-                           [#partition{ id = 0, leader = 1,
+                           [#kafkamocker_partition{ id = 0, leader = 1,
                                         message_sets =
-                                        [#message_set{ size = 1,
+                                        [#kafkamocker_message_set{ size = 1,
                                                        messages =
-                                                       [#message{ value = <<"foo">>}]}]}]}]}.
+                                                       [#kafkamocker_message{ value = <<"foo">>}]}]}]}]}.
 
 produce_reply()->
     Packet =
@@ -87,12 +101,12 @@ encode(CorrelationId, Bin)->
     Reply  = <<PacketSize:32,Packet/binary>>,
     Reply.
 
-encode(#metadata{brokers = Brokers, topics = Topics }=_Packet)->
+encode(#kafkamocker_metadata{brokers = Brokers, topics = Topics }=_Packet)->
     CorrelationId = 1,
     BrokersEncoded = encode_brokers(Brokers),
     TopicsEncoded = encode_topics(Topics),
     encode(CorrelationId, <<BrokersEncoded/binary, TopicsEncoded/binary>>);
-encode(#produce_request{ cor_id = CorId, required_acks = _ReqAck, timeout = _Timeout, topics = Topics })->
+encode(#kafkamocker_produce_request{ cor_id = CorId, required_acks = _ReqAck, timeout = _Timeout, topics = Topics })->
     {EncodedProduceResponse,Offset} = encode_produce_response_topics(Topics),
     encode(CorId, <<EncodedProduceResponse/binary, Offset:(8*8)>>).
 
@@ -104,7 +118,7 @@ encode_produce_response_topics(_,Bin,Ctr) ->
     Offset = 0, %length(M),
     {<<Ctr:32,Bin/binary>>, Offset}.
 
-encode_produce_response_topic(#topic{ name = Name, partitions = Partitions })->
+encode_produce_response_topic(#kafkamocker_topic{ name = Name, partitions = Partitions })->
     EncodedPartitionResponse = encode_produce_response_partitions(Partitions),
     NameSize = byte_size(Name),
     <<NameSize:16, Name/binary, EncodedPartitionResponse/binary>>.
@@ -134,13 +148,13 @@ encode_topics([Topic|Rest],Bin,Ctr)->
 encode_topics(_,Bin,Ctr) ->
     <<Ctr:32,Bin/binary>>.
 
-encode_broker(#broker{id = Id, host = Host, port = Port } = _Packet)->
+encode_broker(#kafkamocker_broker{id = Id, host = Host, port = Port } = _Packet)->
     HostBin = to_binary(Host),
     HostSize = byte_size(HostBin),
     PortBin = port_to_binary(Port),
     <<Id:32, HostSize:16, HostBin/binary, PortBin/binary>>.
 
-encode_topic(#topic{name = Name, partitions = Partitions }= _Packet)->
+encode_topic(#kafkamocker_topic{name = Name, partitions = Partitions }= _Packet)->
     NameSize = byte_size(Name),
     Encoded = encode_partitions(Partitions),
     <<NameSize:32, Name/binary, Encoded/binary>>.
@@ -152,7 +166,7 @@ encode_partitions([Partition|Rest],Bin,Ctr)->
 encode_partitions(_,Bin,Ctr) ->
     <<Ctr:32,Bin/binary>>.
 
-encode_partition(#partition{error_code = Error, id = Id, leader = Leader, replicas = Replicas, isrs = Isrs }= _Packet)->
+encode_partition(#kafkamocker_partition{error_code = Error, id = Id, leader = Leader, replicas = Replicas, isrs = Isrs }= _Packet)->
     FinalError = case Error of undefined -> 0;_ -> Error end,
     EncodedReplicas = encode_replicas(Replicas),
     EncodedIsrs = encode_isrs(Isrs),
@@ -172,9 +186,9 @@ encode_isrs([Isr|Rest],Bin,Ctr)->
 encode_isrs(_,Bin,Ctr) ->
     <<Ctr:32,Bin/binary>>.
 
-encode_replica(#replica{ id = Id })->
+encode_replica(#kafkamocker_replica{ id = Id })->
     <<Id:32>>.
-encode_isr(#isr{ id = Id })->
+encode_isr(#kafkamocker_isr{ id = Id })->
     <<Id:32>>.
 
 port_to_binary(N)->
@@ -196,10 +210,10 @@ decode_produce(Packet)->
         <<CorrelationId:32, ClientIdLen:16, ClientId:ClientIdLen/binary, RequireAcks:16, Timeout:32, Rest/binary >> ->
             debug("~n asked to decode topics ~p",[Rest]),
             {Topics, Remaining } = decode_to_topics(Rest),
-            { #produce_request{ cor_id = CorrelationId, client_id = ClientId, required_acks = RequireAcks, timeout = Timeout, topics = Topics}, Remaining};
+            { #kafkamocker_produce_request{ cor_id = CorrelationId, client_id = ClientId, required_acks = RequireAcks, timeout = Timeout, topics = Topics}, Remaining};
         _ ->
             {
-          #produce_request{},
+          #kafkamocker_produce_request{},
           Packet
          }
     end.
@@ -219,16 +233,16 @@ decode_to_topics(Counter, Packet, Previous) ->
 
 decode_to_topic(<<NameLen:16, Name:NameLen/binary,PartitionsBinary/binary>>)->
     {Partitions,Rest} = decode_to_partitions(PartitionsBinary,[]),
-    {#topic{ name = Name, partitions = Partitions},
+    {#kafkamocker_topic{ name = Name, partitions = Partitions},
      Rest};
 decode_to_topic(Rest)->
-    {#topic{},Rest}.
+    {#kafkamocker_topic{},Rest}.
 
 decode_to_partitions(<<>>, Previous) ->
     {Previous, <<>>};
 decode_to_partitions(<<_Len:32, Id:32, ByteSize:32, MessageSetsEncoded:ByteSize/binary, Remaining/binary>>, Previous) ->
     {MessageSets,_Rest} = decode_message_set(MessageSetsEncoded, []),
-    decode_to_partitions(Remaining, [#partition{ id = Id, message_sets_size = length(MessageSets), message_sets = MessageSets } | Previous ]);
+    decode_to_partitions(Remaining, [#kafkamocker_partition{ id = Id, message_sets_size = length(MessageSets), message_sets = MessageSets } | Previous ]);
 decode_to_partitions(Rest, Previous) ->
     debug("~n dont know what to do with rest:~p previous:~p",[Rest, Previous]),
     {Previous,Rest}.
@@ -238,7 +252,7 @@ decode_to_partitions(Rest, Previous) ->
 % decode_to_message_sets(MessageSets)->
 %     decode_to_message_sets(MessageSets,[]).
 decode_message_set(<<>>, Previous)->
-    {[#message_set{ messages = lists:reverse(Previous), size = length(Previous)  }],<<>>};
+    {[#kafkamocker_message_set{ messages = lists:reverse(Previous), size = length(Previous)  }],<<>>};
 decode_message_set(<<_Offset:64, Size:32, Messages:Size/binary,Rest/binary>>, Previous) ->
     {Next,_} = decode_to_message(Messages),
     %debug("~n ~p rest is ~p, prev is ~p",[Next,Rest,Previous]),
@@ -257,35 +271,35 @@ decode_to_messages(Packet, Previous) ->
     {[Next|Previous], Rest}.
 
 decode_to_message(<<_CRC:32, _Magic:8, Atts:8, KeyLen:32, Key:KeyLen/binary, ByteSize:32, Value:ByteSize/binary, Rest/binary >>)->
-    {#message{ attributes = Atts, key = Key, value = Value },Rest};
+    {#kafkamocker_message{ attributes = Atts, key = Key, value = Value },Rest};
 decode_to_message(<<_CRC:32, _Magic:8, Atts:8, 255, 255, 255, 255, ValueLen:32, Value:ValueLen/binary, Rest/binary >>)->
-    {#message{ attributes = Atts, value = Value },Rest};
+    {#kafkamocker_message{ attributes = Atts, value = Value },Rest};
 decode_to_message(Rest)->
-    {#message{},Rest}.
+    {#kafkamocker_message{},Rest}.
 
-produce_request_to_messages(#produce_request{ topics = Topics}) ->
+produce_request_to_messages(#kafkamocker_produce_request{ topics = Topics}) ->
     lists:reverse(produce_topics_to_messages(Topics,[])).
 
 produce_topics_to_messages([], Acc)->
     Acc;
-produce_topics_to_messages([#topic{ partitions = Partitions} | Topics], Acc)->
+produce_topics_to_messages([#kafkamocker_topic{ partitions = Partitions} | Topics], Acc)->
     Next = produce_partitions_to_messages(Partitions, Acc),
     produce_topics_to_messages(Topics, Next).
 
 produce_partitions_to_messages([],Acc)->
     Acc;
-produce_partitions_to_messages([#partition{ message_sets = MessageSets} | Partitions], Acc)->
+produce_partitions_to_messages([#kafkamocker_partition{ message_sets = MessageSets} | Partitions], Acc)->
     Next = produce_messagesets_to_messages(MessageSets, Acc),
     produce_partitions_to_messages(Partitions, Next).
 
 produce_messagesets_to_messages([],Acc)->
     Acc;
-produce_messagesets_to_messages([#message_set{ messages = Messages} | MessageSets], Acc)->
+produce_messagesets_to_messages([#kafkamocker_message_set{ messages = Messages} | MessageSets], Acc)->
     Next = produce_messages_to_values(Messages, Acc),
     produce_messagesets_to_messages(MessageSets, Next).
 produce_messages_to_values([], Acc)->
     Acc;
-produce_messages_to_values([#message{ value = Value} | Messages], Acc)->
+produce_messages_to_values([#kafkamocker_message{ value = Value} | Messages], Acc)->
     Next = [Value|Acc],
     produce_messages_to_values(Messages, Next).
 

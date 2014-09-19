@@ -10,6 +10,7 @@
 %% Include files
 %%--------------------------------------------------------------------
 -include("kafkamocker.hrl").
+%-include_lib("eunit/include/eunit.hrl").
 
 %%--------------------------------------------------------------------
 %% External exports
@@ -32,12 +33,11 @@ start_link()->
     start_link({metadata,kafkamocker:metadata()}).
 start_link({broker, Broker, Topics}) ->
     gen_fsm:start_link({local, ?SERVER}, ?MODULE, {broker, Broker, Topics}, []);
-start_link({metadata,#metadata{ brokers = Brokers, topics = Topics }  = Metadata}) ->
-    case gen_fsm:start_link({local, ?SERVER}, ?MODULE, [], []) of
+start_link({metadata,#kafkamocker_metadata{ brokers = Brokers, topics = Topics }  = Metadata}) ->
+    case gen_fsm:start_link({local, ?SERVER}, ?MODULE, [Metadata, Topics], []) of
         {ok,Pid}->
-            gen_fsm:sync_send_event(Pid, {set, metadata, Metadata}),
             [ begin
-                  gen_fsm:send_event(Pid, {broker, Broker, Topics })
+                  gen_fsm:send_event(Pid, {broker, start, Broker})
               end || Broker <- Brokers ],
             {ok,Pid};
         _E ->
@@ -54,16 +54,16 @@ start_link({metadata,#metadata{ brokers = Brokers, topics = Topics }  = Metadata
 %%          ignore                              |
 %%          {stop, StopReason}
 %%--------------------------------------------------------------------
-init(_Args) ->
+init([Metadata, Topics]) ->
     GotCallbackAs = application:get_env(kafkamocker, kafkamocker_callback),
     Callback = case GotCallbackAs of
-                   {ok, Pid}->
-                       Pid;
+                   {ok, PidName}->
+                       PidName;
                    _ ->
                        erlang:register( kafkamocker_debug_loop, spawn(fun()-> debug_loop() end)),
                        kafkamocker_debug_loop
                end,
-    {ok,state_name, #kafkamocker_fsm{ callback = Callback}}.
+    {ok,state_name, #kafkamocker_fsm{ callback = Callback, metadata = Metadata, topics = Topics}}.
 
 %%--------------------------------------------------------------------
 %% Func: StateName/2
@@ -71,10 +71,23 @@ init(_Args) ->
 %%          {next_state, NextStateName, NextStateData, Timeout} |
 %%          {stop, Reason, NewStateData}
 %%--------------------------------------------------------------------
-state_name({broker, #broker{ host = BrokerHost, port = BrokerPort} = Broker, Topics}, StateData) ->
-    {ok, _} = ranch:start_listener(BrokerHost, 1,
-                                   ranch_tcp, [{port, BrokerPort}], kafkamocker_tcp_handler, [StateData#kafkamocker_fsm.callback, StateData#kafkamocker_fsm.metadata  ]),
-    {next_state, state_name, #kafkamocker_fsm{ broker = Broker, topics = Topics }}.
+state_name({broker, start, #kafkamocker_broker{ id = BrokerId, host = BrokerHost, port = BrokerPort} = Broker}, #kafkamocker_fsm{ brokers = Brokers, callback = Callback, metadata = Metadata } = StateData) ->
+    start_broker(BrokerHost, BrokerPort, BrokerId, Callback, Metadata),
+    {next_state, state_name, StateData#kafkamocker_fsm{ brokers = [Broker|Brokers] }};
+state_name({broker, stop, #kafkamocker_broker{ host = BrokerHost, port = BrokerPort}}, StateData)->
+    BrokerName = {BrokerHost,BrokerPort},
+    _Stopped = ranch:stop_listener(BrokerName),
+    %?debugFmt("~n stop ~p => ~p",[Broker, _Stopped]),
+    {next_state, state_name, StateData};
+state_name(simulate_brokers_down, #kafkamocker_fsm{ brokers = Brokers } = StateData)->
+    [ begin
+          stop_broker(BrokerHost,BrokerPort)
+          %,io:format("~n stop ~p:~p => ~p",[BrokerHost,BrokerPort, Stopped])
+          end || #kafkamocker_broker{ host = BrokerHost, port = BrokerPort }  <- Brokers ],
+    {next_state, state_name, StateData};
+state_name(_UnknownEvent, StateData) ->
+    io:format("dont know how to handle ~p",[_UnknownEvent]),
+    {next_state, state_name, StateData}.
 
 %%--------------------------------------------------------------------
 %% Func: StateName/3
@@ -85,9 +98,14 @@ state_name({broker, #broker{ host = BrokerHost, port = BrokerPort} = Broker, Top
 %%          {stop, Reason, NewStateData}                          |
 %%          {stop, Reason, Reply, NewStateData}
 %%--------------------------------------------------------------------
-state_name({set, metadata, Metadata}, _From, StateData) ->
-    Reply = ok,
-    {reply, Reply, state_name, StateData#kafkamocker_fsm{ metadata = Metadata} };
+state_name({metadata, #kafkamocker_metadata{ brokers = Brokers} = Metadata}, _From, #kafkamocker_fsm{ callback = Callback } = State)->
+      [ begin
+            start_broker(BrokerHost, BrokerPort, BrokerId, Callback, Metadata)
+        end || #kafkamocker_broker{ host = BrokerHost, port = BrokerPort, id = BrokerId} <- Brokers],
+    {reply, ok, state_name, State#kafkamocker_fsm{ metadata = Metadata }};
+state_name({get, metadata}, _From, StateData) ->
+    Reply = StateData#kafkamocker_fsm.metadata,
+    {reply, Reply, state_name, StateData};
 state_name(Event, _From, StateData) ->
     Reply = Event,
     {reply, Reply, StateData}.
@@ -145,6 +163,17 @@ code_change(_OldVsn, StateName, StateData, _Extra) ->
 debug_loop()->
     receive
         X ->
-            error_logger:info_msg("~n consumer got ~p",[X]),
+            error_logger:info_msg("consumed: ~p",[X]),
             debug_loop()
     end.
+
+start_broker(BrokerHost, BrokerPort, BrokerId, Callback, Metadata)->
+    BrokerName = {BrokerHost,BrokerPort},
+    _Stopped = stop_broker(BrokerHost, BrokerPort),
+    _Started = ranch:start_listener(BrokerName, BrokerId,
+                                    ranch_tcp, [{port, BrokerPort}], kafkamocker_tcp_handler, [Callback, Metadata]),
+    io:format("~n ~p => stopped:~p started:~p",[BrokerId, _Stopped, _Started]),
+    _Started.
+
+stop_broker(BrokerHost, BrokerPort)->
+    ranch:stop_listener({BrokerHost,BrokerPort}).
